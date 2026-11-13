@@ -1,0 +1,174 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: windmill
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: windmill-db
+  namespace: windmill
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: mIWz0IjSxfeLFIw6uHfbulzz
+  DATABASE_URL: postgres://postgres:mIWz0IjSxfeLFIw6uHfbulzz@windmill-postgres.windmill.svc.cluster.local:5432/windmill?sslmode=disable
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: windmill-postgres
+  namespace: windmill
+spec:
+  clusterIP: None
+  selector:
+    app: windmill-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: windmill-postgres
+  namespace: windmill
+spec:
+  serviceName: windmill-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: windmill-postgres
+  template:
+    metadata:
+      labels:
+        app: windmill-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: windmill
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: windmill-db
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "windmill"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: windmill-server
+  namespace: windmill
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: windmill-server
+  template:
+    metadata:
+      labels:
+        app: windmill-server
+    spec:
+      containers:
+        - name: windmill
+          image: ghcr.io/windmill-labs/windmill:main
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MODE
+              value: server
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: windmill-db
+                  key: DATABASE_URL
+          readinessProbe:
+            httpGet:
+              path: /api/version
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: windmill-worker
+  namespace: windmill
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: windmill-worker
+  template:
+    metadata:
+      labels:
+        app: windmill-worker
+    spec:
+      containers:
+        - name: windmill
+          image: ghcr.io/windmill-labs/windmill:main
+          imagePullPolicy: Always
+          env:
+            - name: MODE
+              value: worker
+            - name: WORKER_GROUP
+              value: default
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: windmill-db
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: windmill
+  namespace: windmill
+spec:
+  selector:
+    app: windmill-server
+  ports:
+    - port: 80
+      targetPort: 8000
